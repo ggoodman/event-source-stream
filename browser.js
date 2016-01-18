@@ -1,42 +1,92 @@
-var stream = require('stream')
+var stream = require('stream');
 
 module.exports = function(url, opts) {
-  if (!opts) opts = {}
+    if (!opts) opts = {};
 
-  var es = new EventSource(url)
-  var rs = new stream.Readable({objectMode:true})
+    var destroyed = false;
+    var rs = new stream.Readable({
+        objectMode: true
+    });
 
-  var json = !!opts.json
-  var decode = function (data) {
-    try {
-      if (json) return JSON.parse(data)
-      return data
-    } catch (err) {
-      return undefined
+    rs._read = function() {};
+
+    rs.destroy = function() {
+        if (destroyed) return;
+        destroyed = true;
+        rs.emit('close');
+    };
+    
+    connect(url, rs, opts);
+    
+    return rs;
+};
+
+function connect(url, rs, options) {
+    var timeout;
+    var es = new window.EventSource(url);
+    var json = !!options.json;
+    
+    rs.once('close', onClose);
+
+    es.onopen = function() {
+        rs.emit('open');
+        
+        resetTimeout();
+    };
+    
+    es.addEventListener('ping', resetTimeout);
+
+    es.onmessage = function(e) {
+        rs.push(decode(e.data, json));
+        
+        resetTimeout();
+    };
+
+    es.onerror = function() {
+        var error = es.readyState === 0
+            ?   new Error('Connection lost')
+            :   new Error('Connection error');
+
+        if (rs.listeners('error').length) rs.emit('error', error);
+    };
+    
+    function onClose() {
+        if (timeout) {
+            clearTimeout(timeout);
+            timeout = null;
+        }
+        
+        if (!es.readyState !== 2) {
+            es.close();
+        }
     }
-  }
 
-  rs._read = function() {}
+    function onTimeout() {
+        var error = new Error('Connection timed out');
+        
+        error.code = 'E_TIMEDOUT';
+        
+        rs.emit('error', error);
+        
+        onClose();
+    }
 
-  es.onmessage = function(e) {
-    rs.push(decode(e.data))
-  }
+    function resetTimeout() {
+        if (timeout) {
+            clearTimeout(timeout);
+        }
+        
+        // Default to 20s timeout
+        timeout = setTimeout(onTimeout, options.timeout || 20 * 1000);
+    }
+}
 
-  es.onerror = function(err) {
-    if (rs.listeners('error').length) rs.emit('error', err)
-  }
-
-  es.onopen = function () {
-    rs.emit('open')
-  }
-
-  var destroyed = false
-  rs.destroy = function() {
-    if (destroyed) return
-    destroyed = true
-    es.close()
-    rs.emit('close')
-  }
-
-  return rs
+function decode(data, json) {
+    try {
+        if (json) return JSON.parse(data);
+        return data;
+    }
+    catch (err) {
+        return undefined;
+    }
 }
